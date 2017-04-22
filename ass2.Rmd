@@ -1,0 +1,155 @@
+---
+title: "Assignment 2"
+author: "Tal Waitzenberg & Lital Morali"
+output: html_notebook
+---
+
+### Introduction 
+In this model we have decided to explore the missing data, and to see if we can predict
+the missing data by the existing data and hope to get a better predictions about the survivals.
+
+
+### data preproccessing 
+
+set working directory 
+```{r}
+setwd('C:/Users/talon/Desktop/shitot/Assignment2')
+#install.packages('knitr')
+knitr::opts_knit$set(root.dir = 'C:/Users/talon/Desktop/shitot')
+getwd()
+```
+
+
+read data csv files:
+```{r}
+library(ggplot2)
+library(caret)
+train.data <- read.csv("Titanic/train.csv",na.strings = "")
+test.data <- read.csv("Titanic/test.csv",na.strings = "")
+train.data.nrow<-seq(1, nrow(train.data))
+```
+
+Merge the data (merge test and train to predict both missing data together)
+* we added Survived column to test file because its no exsits there.
+```{r}
+merged.data <-rbind(train.data, cbind(test.data, Survived=rep(NA, nrow(test.data))))
+```
+
+### Variables Description:
+
+|Feature |  Description|
+|-------------|:------------------------------------------------|
+|survival |  Survival (0 = No; 1 = Yes)|
+|pclass |  Passenger Class (1 = 1st; 2 = 2nd; 3 = 3rd)|
+|name  |  Name|
+|sex |   Sex|
+|age |  Age|
+|sibsp  |   Number of Siblings/Spouses Aboard|
+|parch  |   Number of Parents/Children Aboard|
+|ticket |   Ticket Number|
+|fare  |   Passenger Fare|
+|cabin  |   Cabin|
+|embarked |   Port of Embarkation (C = Cherbourg; Q = Queenstown; S = Southampton)|
+
+Now we check what are the missing data fields
+```{r}
+#install.packages('reshape')
+library(reshape)
+merged.data.missing <- melt(apply(merged.data[, -2], 2, function(x) sum(is.na(x) | x=="")))
+knitr::kable(merged.data.missing,caption = "Missing data")
+```
+
+
+We can see that there is missing data in "Age" ,"Cabin" "Embarked" and "Fare":
+There is 263 passengers that their Age is missing let see the plot of passengers age
+```{r}
+qplot(merged.data$Age, main="Passenger Age", xlab = "Age", bins = 30)
+```
+
+by checking passengers age we can see that most of the passengers is between 18 - 35
+we want to predict the ages of the passengers with missing age
+lets getting honorific abbreviations out of the name by adding new variable called "Name_Abbreviations"
+and look on it plot
+```{r}
+merged.data$Name_Abbreviations<-regmatches(as.character(merged.data$Name),regexpr("\\,[A-z ]{1,20}\\.", as.character(merged.data$Name)))
+merged.data$Name_Abbreviations<-unlist(lapply(merged.data$Name_Abbreviations,FUN=function(x) substr(x, 3, nchar(x)-1)))
+qplot(merged.data$Name_Abbreviations, main="Name honorific Abbreviations", xlab = "Abbreviations")
+```
+
+we can see 17 groups of Name honorific Abbreviations , when most of the passengers is "Miss", "Mr", "Mrs" and "Master"
+lets change all passengers Name honorific Abbreviations to the most common 4 groups, and convert "Name_Abbreviations" to factor.
+```{r}
+merged.data$Name_Abbreviations[which(merged.data$Name_Abbreviations %in% c("Mme", "Mlle"))] <- "Miss"
+merged.data$Name_Abbreviations[which(merged.data$Name_Abbreviations %in% c("Lady", "Ms", "the Countess", "Dona"))] <- "Mrs"
+merged.data$Name_Abbreviations[which(merged.data$Name_Abbreviations=="Dr" & merged.data$Sex=="female")] <- "Mrs"
+merged.data$Name_Abbreviations[which(merged.data$Name_Abbreviations=="Dr" & merged.data$Sex=="male")] <- "Mr"
+merged.data$Name_Abbreviations[which(merged.data$Name_Abbreviations %in% c("Capt", "Col", "Don", "Jonkheer", "Major", "Rev", "Sir"))] <- "Mr"
+merged.data$Name_Abbreviations<-as.factor(merged.data$Name_Abbreviations)
+```
+
+Now according to new "Name_Abbreviations" variable lets fill all passengers with missing age according
+to their "Name_Abbreviations" group median age.
+```{r}
+age<-aggregate(merged.data$Age,by = list(merged.data$Name_Abbreviations), FUN = function(x) median(x, na.rm = T))
+merged.data[is.na(merged.data$Age), "Age"] <- apply(merged.data[is.na(merged.data$Age), ] , 1, function(x) age[age[, 1]==x["Name_Abbreviations"], 2])
+```
+
+back to other missing data, There is 2 passengers with missing "Embarked", lets check the most common
+```{r}
+table(merged.data$Embarked)
+```
+
+we can see that "S" is the most common so lets add "S" to this 2 passengers
+```{r}
+merged.data$Embarked[which(is.na(merged.data$Embarked) | merged.data$Embarked=="")] <- 'S'
+```
+
+Now lets split the data to test and train
+```{r}
+test.data <- merged.data[-train.data.nrow, ]
+train.data <- merged.data[train.data.nrow, ]
+```
+
+
+lets train our model with caret package, we going to use random forest model
+```{r}
+set.seed(1234)
+train.data$Survived<- as.factor(train.data$Survived)
+train.data$Pclass<- as.factor(train.data$Pclass)
+library('randomForest')
+fit.rf <- train(Survived ~ Pclass+Age+SibSp+Parch+Name_Abbreviations, data=train.data, method="rf", ntree=2000, trControl=trainControl(method="cv", number=5), tuneGrid=expand.grid(.mtry=seq(1,7,1)))
+```
+
+create csv file to random forest model
+```{r}
+test.data$Pclass <- as.factor(test.data$Pclass)
+fit.rf.pred<- predict(fit.rf,  newdata=test.data, type="raw")
+res <- cbind(PassengerId = test.data$PassengerId,Survived=as.character(fit.rf.pred))
+write.csv(res,file="Titanic/try1.csv",row.names = F)
+```
+
+![First try](images/try1.PNG)
+We scored 0.77512 
+now lets try use linear reggression model "glm", and lets add Embarked field to the model 
+
+```{r}
+fit.glm <- glm(Survived ~ Pclass+Age+SibSp+Parch+Embarked+Name_Abbreviations, data=train.data, family=binomial)
+fit.glm.pred<-predict(fit.glm,  newdata=test.data, type="response")
+test.data$Survived <- as.numeric(as.numeric(fit.glm.pred)>0.5)
+res <- cbind(PassengerId = test.data$PassengerId,Survived=as.numeric(as.numeric(fit.glm.pred)>0.5))
+write.csv(res,"Titanic/try2.csv", row.names=F)
+```
+
+![Second try](images/try2.PNG)
+We scored 0.78469, which is an improvment. we got beeter result with linear reggression
+lets remove the Embarked field from the model, ans see if there is improvment in the results 
+
+```{r}
+fit.glm_no_Embarked <- glm(Survived ~ Pclass+Age+SibSp+Parch+Name_Abbreviations, data=train.data, family=binomial)
+fit.glm_no_Embarked.pred<-predict(fit.glm_no_Embarked,  newdata=test.data, type="response")
+res <- cbind(PassengerId = test.data$PassengerId,Survived=as.numeric(as.numeric(fit.glm_no_Embarked.pred)>0.5))
+write.csv(res,"Titanic/try3.csv", row.names=F)
+```
+We scored 0.79426, our best score.
+![Third try](images/try3.PNG)
+
